@@ -1,0 +1,235 @@
+
+"""
+KLYRO
+A lightweight file management and analysis toolkit.
+Version: 1.0.0
+"""
+
+import os
+import sys
+import json
+import hashlib
+import argparse
+from pathlib import Path
+from collections import defaultdict
+from datetime import datetime
+
+
+class Klyro:
+
+    def __init__(self, directory):
+        self.directory = Path(directory).expanduser().resolve()
+
+        if not self.directory.exists() or not self.directory.is_dir():
+            raise ValueError("The specified directory does not exist.")
+
+    def scan(self):
+        """Collect information about files in the directory."""
+        results = []
+
+        for file in self.directory.rglob("*"):
+            if file.is_file():
+                try:
+                    stat = file.stat()
+                    results.append({
+                        "name": file.name,
+                        "path": str(file),
+                        "extension": file.suffix.lower() or "no extension",
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(
+                            stat.st_mtime
+                        ).isoformat(timespec="seconds")
+                    })
+                except (PermissionError, OSError):
+                    continue
+
+        return results
+
+    def analyze(self):
+        """Generate a summary of directory contents."""
+        files = self.scan()
+        extensions = defaultdict(int)
+
+        total_size = 0
+
+        for file in files:
+            extensions[file["extension"]] += 1
+            total_size += file["size"]
+
+        return {
+            "directory": str(self.directory),
+            "total_files": len(files),
+            "total_size_bytes": total_size,
+            "total_size_mb": round(total_size / (1024 ** 2), 2),
+            "extensions": dict(extensions),
+            "generated_at": datetime.now().isoformat(
+                timespec="seconds"
+            )
+        }
+
+    @staticmethod
+    def file_hash(file_path):
+        """Calculate SHA-256 hash without loading the whole file."""
+        digest = hashlib.sha256()
+
+        with open(file_path, "rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+
+        return digest.hexdigest()
+
+    def find_duplicates(self):
+        """Find duplicate files using their SHA-256 hashes."""
+        groups = defaultdict(list)
+
+        for file in self.scan():
+            try:
+                file_hash = self.file_hash(file["path"])
+                groups[file_hash].append(file["path"])
+            except (PermissionError, OSError):
+                continue
+
+        return {
+            key: paths
+            for key, paths in groups.items()
+            if len(paths) > 1
+        }
+
+    def export_report(self, output="klyro_report.json"):
+        """Export directory analysis to a JSON report."""
+        report = {
+            "analysis": self.analyze(),
+            "files": self.scan(),
+            "duplicates": self.find_duplicates()
+        }
+
+        output_path = Path(output).expanduser().resolve()
+
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(report, file, indent=4, ensure_ascii=False)
+
+        return output_path
+
+    def organize(self, dry_run=True):
+        """Organize files into folders based on their extensions."""
+        operations = []
+
+        for file in self.scan():
+            source = Path(file["path"])
+            folder_name = source.suffix.lower().replace(".", "") or "other"
+            destination_dir = self.directory / folder_name
+            destination = destination_dir / source.name
+
+            if source.parent == destination_dir:
+                continue
+
+            if destination.exists():
+                continue
+
+            operations.append((source, destination))
+
+            if not dry_run:
+                destination_dir.mkdir(exist_ok=True)
+                source.rename(destination)
+
+        return operations
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Klyro - Lightweight File Intelligence Toolkit"
+    )
+
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Directory to analyze"
+    )
+
+    parser.add_argument(
+        "--duplicates",
+        action="store_true",
+        help="Find duplicate files"
+    )
+
+    parser.add_argument(
+        "--organize",
+        action="store_true",
+        help="Organize files by extension"
+    )
+
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply file organization changes"
+    )
+
+    parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Export a JSON report"
+    )
+
+    args = parser.parse_args()
+
+    try:
+        app = Klyro(args.directory)
+
+        print("\n" + "=" * 45)
+        print("             KLYRO FILE INTELLIGENCE")
+        print("=" * 45)
+
+        if args.duplicates:
+            duplicates = app.find_duplicates()
+
+            print("\nDuplicate files:")
+
+            if not duplicates:
+                print("No duplicate files found.")
+
+            for file_hash, paths in duplicates.items():
+                print(f"\nSHA-256: {file_hash}")
+                for path in paths:
+                    print(f"  - {path}")
+
+        elif args.organize:
+            operations = app.organize(dry_run=not args.apply)
+
+            print("\nOrganization preview:")
+
+            for source, destination in operations:
+                print(f"{source} -> {destination}")
+
+            if not args.apply:
+                print("\nPreview only. Use --apply to execute.")
+
+            else:
+                print(f"\nOrganized {len(operations)} files.")
+
+        else:
+            report = app.analyze()
+
+            print(f"\nDirectory: {report['directory']}")
+            print(f"Total files: {report['total_files']}")
+            print(f"Total size: {report['total_size_mb']} MB")
+
+            print("\nFile types:")
+            for extension, count in sorted(
+                report["extensions"].items()
+            ):
+                print(f"  {extension}: {count}")
+
+        if args.export:
+            output = app.export_report()
+            print(f"\nReport exported: {output}")
+
+        print("\nKlyro completed successfully.")
+
+    except (ValueError, OSError) as error:
+        print(f"\nError: {error}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
